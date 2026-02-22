@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JEWELS-AI | Fast Drive AR</title>
+
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+  <style>
+    body { margin: 0; background: #000; overflow: hidden; font-family: sans-serif; }
+
+    .button-panel {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      z-index: 100;
+    }
+
+    .plan-button {
+      padding: 12px 24px;
+      font-size: 15px;
+      font-weight: bold;
+      border: none;
+      border-radius: 8px;
+      background-color: #5E0F8B;
+      color: #fff;
+      cursor: pointer;
+      min-width: 160px;
+    }
+
+    #loader {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      z-index: 300;
+      font-size: 18px;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="loader">Initializing AR...</div>
+
+<div class="button-panel" id="planButtons">
+  <button class="plan-button" id="toggleButton">▶️ Play Video</button>
+</div>
+
+<a-scene 
+  mindar-image="imageTargetSrc: ./targets.mind"
+  vr-mode-ui="enabled: false"
+  device-orientation-permission-ui="enabled: false"
+  renderer="antialias: true; alpha: true">
+
+  <a-assets>
+    <video
+      id="driveVideo"
+      playsinline
+      preload="metadata"
+      muted
+      loop
+      crossorigin="anonymous">
+    </video>
+  </a-assets>
+
+  <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+  <a-entity id="target1" mindar-image-target="targetIndex: 0">
+    <a-circle
+      radius="0.5"
+      material="shader: chromakey; src: #driveVideo; color: #00FF00; threshold: 0.3; smoothness: 0.05; side: double; transparent: true">
+    </a-circle>
+  </a-entity>
+
+</a-scene>
+
+<script>
+
+/* ===============================
+   CONFIGURATION
+================================ */
+
+const API_KEY = "AIzaSyC35sqqZA1YaxZ-F4PJaDqQpKBxPyMKOzw";
+const FOLDER_ID = "1fDj4lVzWcrXJnIQnljrC4-_SBEEV1dlz";
+
+/* ===============================
+   FAST CHROMA SHADER
+================================ */
+
+AFRAME.registerShader('chromakey', {
+  schema: {
+    src: {type: 'map'},
+    color: {type: 'color', default: '#00FF00'},
+    threshold: {type: 'number', default: 0.3},
+    smoothness: {type: 'number', default: 0.05}
+  },
+
+  init: function(data) {
+    const videoTexture = new THREE.VideoTexture(data.src);
+
+    videoTexture.minFilter = THREE.LinearFilter;
+    videoTexture.magFilter = THREE.LinearFilter;
+    videoTexture.generateMipmaps = false;
+
+    this.material = new THREE.ShaderMaterial({
+      uniforms: {
+        tex: {value: videoTexture},
+        keyColor: {value: new THREE.Color(data.color)},
+        similarity: {value: data.threshold},
+        smoothness: {value: data.smoothness}
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tex;
+        uniform vec3 keyColor;
+        uniform float similarity;
+        uniform float smoothness;
+        varying vec2 vUv;
+
+        void main() {
+          vec4 videoColor = texture2D(tex, vUv);
+          float diff = distance(videoColor.rgb, keyColor);
+          float alpha = smoothstep(similarity, similarity + smoothness, diff);
+          float dToCenter = distance(vUv, vec2(0.5,0.5));
+          if (alpha < 0.1 || dToCenter > 0.5) discard;
+          gl_FragColor = vec4(videoColor.rgb, alpha);
+        }
+      `,
+      transparent: true
+    });
+  }
+});
+
+/* ===============================
+   FAST DRIVE FETCH (Optimized)
+================================ */
+
+async function getLatestVideo() {
+
+  const cachedId = localStorage.getItem("latestVideoId");
+
+  if (cachedId) {
+    return cachedId;
+  }
+
+  const url = `https://www.googleapis.com/drive/v3/files?q='${FOLDER_ID}'+in+parents+and+mimeType+contains+'video/'&orderBy=modifiedTime+desc&pageSize=1&fields=files(id)&key=${API_KEY}`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+
+  if (data.files && data.files.length > 0) {
+    const fileId = data.files[0].id;
+    localStorage.setItem("latestVideoId", fileId);
+    return fileId;
+  }
+
+  return null;
+}
+
+/* ===============================
+   AR LOGIC
+================================ */
+
+window.addEventListener("load", async () => {
+
+  const videoEl = document.querySelector("#driveVideo");
+  const target = document.querySelector("#target1");
+  const toggleButton = document.querySelector("#toggleButton");
+  const buttonsContainer = document.querySelector("#planButtons");
+  const loader = document.querySelector("#loader");
+
+  loader.style.display = "none";
+
+  let isPlaying = false;
+  let videoReady = false;
+
+  target.addEventListener("targetFound", async () => {
+
+    buttonsContainer.style.display = "block";
+
+    if (!videoReady) {
+      const fileId = await getLatestVideo();
+
+      if (fileId) {
+        videoEl.src = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${API_KEY}`;
+        videoEl.load();
+        videoReady = true;
+      }
+    }
+  });
+
+  target.addEventListener("targetLost", () => {
+    buttonsContainer.style.display = "none";
+    videoEl.pause();
+    isPlaying = false;
+    toggleButton.textContent = "▶️ Play Video";
+  });
+
+  toggleButton.addEventListener("click", async () => {
+    if (!isPlaying) {
+      await videoEl.play();
+      toggleButton.textContent = "⏸ Pause Video";
+      isPlaying = true;
+    } else {
+      videoEl.pause();
+      toggleButton.textContent = "▶️ Play Video";
+      isPlaying = false;
+    }
+  });
+
+});
+
+document.addEventListener("contextmenu", e => e.preventDefault());
+
+</script>
+
+</body>
+</html>
